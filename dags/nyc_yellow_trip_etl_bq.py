@@ -21,7 +21,7 @@ default_args = {
     'depends_on_past': False,
     'start_date': datetime(2023, 6, 1),
     'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    'retry_delay': timedelta(minutes=20),
 }
 
 dag = DAG(
@@ -31,11 +31,13 @@ dag = DAG(
     schedule_interval='0 6 1 * *'
 )
 
-def af_extract_http_load_to_gcs(execution_date):
-    http_url = 'https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_' + execution_date[:7] + '.parquet'
+def af_extract_http_load_to_gcs(suf_ds, suf_ds_nodash):
+
+    http_url = 'https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_' + suf_ds[:7] + '.parquet'
+    print(http_url)
 
     gcs_bucket_name = 'nyc-taxi-etl-pipeline-cepel'
-    gcs_object_name = 'raw_data/yellow_tripdata_' + execution_date[:7].replace("-", "") + '.parquet'
+    gcs_object_name = 'raw_data/yellow_tripdata_' + suf_ds_nodash[:6] + '.parquet'
     
     gcs_hook = GCSHook(gcp_conn_id='google_cloud_default')
 
@@ -52,19 +54,20 @@ def af_extract_http_load_to_gcs(execution_date):
         )
         print('File uploaded to GCS successfully.')
     else:
-        print('Failed to fetch data from HTTP source!')
+        raise ValueError("Failed to fetch data from HTTP source!")
 
 
-def af_transform_and_load_to_bq(execution_date):
+def af_transform_and_load_to_bq(suf_ds_nodash):
+    
     gcs_hook = GCSHook(gcp_conn_id='google_cloud_default')
 
     gcs_bucket = 'nyc-taxi-etl-pipeline-cepel'
-    gcs_object = 'raw_data/yellow_tripdata_' + execution_date[:7].replace("-", "") + '.parquet'
+    gcs_object = 'raw_data/yellow_tripdata_' + suf_ds_nodash[:6] + '.parquet'
 
     gcs_file_path = gcs_hook.download(
         bucket_name=gcs_bucket,
         object_name=gcs_object,
-        filename='/tmp/tmp_yellow_tripdata_' + execution_date[:7].replace("-", "") + '.parquet'
+        filename='/tmp/tmp_yellow_tripdata_' + suf_ds_nodash[:6] + '.parquet'
     )
 
     df = pd.read_parquet(gcs_file_path)
@@ -85,7 +88,7 @@ def af_transform_and_load_to_bq(execution_date):
     client = bigquery.Client.from_service_account_json(credentials_path, project="nyc-taxi-409720")
 
     dataset_id = "fact_dataset"
-    table_id = "fact_yellow_trips_m_" + execution_date[:7].replace("-", "")
+    table_id = "fact_yellow_trips_m_" + suf_ds_nodash[:6]
 
     dataset_ref = client.dataset(dataset_id)
     table_ref = dataset_ref.table(table_id)
@@ -101,7 +104,7 @@ def af_transform_and_load_to_bq(execution_date):
 def af_load_bq_to_bq_looker():
 
     sql_query = """
-    CREATE OR REPLACE TABLE `nyc-taxi-409720.analytics_nyc_taxi.looker_nyc_taxi_{{execution_date.strftime("%Y%m")}}` AS (
+    CREATE OR REPLACE TABLE `nyc-taxi-409720.analytics_nyc_taxi.looker_nyc_taxi_{{ ds_nodash[:6] }}` AS (
     SELECT 
         a.vendor_id
         ,a.rate_code_id
@@ -120,9 +123,11 @@ def af_load_bq_to_bq_looker():
         ,a.total_amount
         ,b.rate_code_name
         ,c.payment_type_name
-    FROM `nyc-taxi-409720.fact_dataset.fact_yellow_trips_m_{{execution_date.strftime("%Y%m")}}` a
+        ,d.vendor_name
+    FROM `nyc-taxi-409720.fact_dataset.fact_yellow_trips_m_{{ ds_nodash[:6] }}` a
     LEFT JOIN `nyc-taxi-409720.dim_dataset.dim_rate_code` b ON a.rate_code_id=b.rate_code_id  
     LEFT JOIN `nyc-taxi-409720.dim_dataset.dim_payment_type` c ON a.payment_type=c.payment_type_id
+    LEFT JOIN `nyc-taxi-409720.dim_dataset.dim_tpep_vendor` d ON a.vendor_id=d.vendor_id
     )
     """
 
@@ -131,15 +136,16 @@ def af_load_bq_to_bq_looker():
 extract_http_load_to_gcs = PythonOperator(
     task_id='extract_http_load_to_gcs',
     python_callable=af_extract_http_load_to_gcs,
-    op_kwargs={'execution_date': '{{ execution_date }}'},
-    dag=dag,
+    provide_context=True,
+    op_kwargs={'suf_ds': '{{ ds }}', 'suf_ds_nodash': '{{ ds_nodash}}'},
+    dag=dag
 )
 
 transform_and_load_to_bq = PythonOperator(
     task_id='transform_and_load_to_bq',
     python_callable=af_transform_and_load_to_bq,
     provide_context=True,
-    op_kwargs={'execution_date': '{{ execution_date }}'},
+    op_kwargs={'suf_ds_nodash': '{{ ds_nodash }}'},
     dag=dag
 )
 
@@ -149,7 +155,6 @@ load_bq_to_bq_looker = BigQueryExecuteQueryOperator(
     use_legacy_sql=False,
     location='EU',
     gcp_conn_id='google_cloud_default',
-    params={'execution_date': '{{ execution_date }}'},
     dag=dag,
 )
 
