@@ -18,9 +18,9 @@ End-to-end data engineering pipeline that retrieves "Yellow Taxi Trip Records" d
 ## Getting Started
 1. Clone this repository.
 2. Review the Jupyter Notebooks in the `notebooks` directory for initial exploration and setup.
-3. 
+3. Use DDL scripts to create tables in `sql` directory, and load data from `data` to BigQuery.
 4. Install and launch Apache Airflow (local or Cloud Composer), and deploy the DAG in `dag` directory.
-5. Configure the 
+5. Connect Airflow to Google Cloud, and execute `nyc_yellow_trip_etl_bq` dag. 
 
 ## License
 This project is licensed under MIT License - see the [LICENSE](LICENSE) file for details.
